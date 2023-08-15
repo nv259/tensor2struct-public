@@ -10,7 +10,7 @@ import wandb
 from experiments.spider_dg import (
     train,
     meta_train,
-    eqrm_train,
+    eqrm_train
 )
 
 
@@ -27,11 +27,17 @@ class MetaTrainConfig:
     config_args = attr.ib()
     logdir = attr.ib()
 
+@attr.s 
+class EQRMTrainConfig:
+    config = attr.ib()
+    config_args = attr.ib()
+    logdir = attr.ib()
+
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "mode", choices=["train", "meta_train",], help="train/meta_train/dist_train",
+        "mode", choices=["train", "meta_train", "eqrm_train"], help="train/meta_train/dist_train",
     )
     parser.add_argument("exp_config_file", help="jsonnet file for experiments")
     args = parser.parse_args()
@@ -56,7 +62,7 @@ def main():
     project = exp_config["project"]
 
     # dist train need to start a wandb session in each process, not a global one
-    if args.mode in ["train", "meta_train"]:
+    if args.mode in ["train", "meta_train", "eqrm_train"]:
         wandb.init(project=project, group=expname, job_type=args.mode)
 
     if args.mode == "train":
@@ -65,6 +71,9 @@ def main():
     elif args.mode == "meta_train":
         train_config = MetaTrainConfig(model_config_file, model_config_args, logdir)
         meta_train.main(train_config)
+    elif args.mode == "eqrm_train":
+        train_config = EQRMTrainConfig(model_config_file, model_config_args, logdir)
+        eqrm_train.main(train_config)
 
 
 if __name__ == "__main__":
