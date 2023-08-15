@@ -24,17 +24,17 @@
         include_literals: true,
 
         # training
-        bs: 3,  # bookmark here
+        bs: 12,  # bookmark here
         att: 0,
-        lr: 5e-4,
+        lr: 6e-4,
         clip_grad: 0.3,
         num_batch_accumulated: 1,  # bookmark here
         // num_particles: 5, 
         # eqrm
-        burnin_iters: 1000,
+        burnin_iters: 2500,
         quantile: 0.75,
-        max_steps: 2000,
-        save_threshold: 1900,
+        max_steps: 20000,
+        save_threshold: 10000,
         use_bert_training: true,
         device: "cuda:0",
     },
