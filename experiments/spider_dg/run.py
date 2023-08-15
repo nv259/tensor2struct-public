@@ -10,6 +10,7 @@ import wandb
 from experiments.spider_dg import (
     train,
     meta_train,
+    eqrm_train,
 )
 
 
