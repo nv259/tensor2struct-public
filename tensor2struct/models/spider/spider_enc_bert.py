@@ -13,7 +13,7 @@ from tensor2struct.models import abstract_preproc
 from tensor2struct.utils import serialization, vocab, registry
 from tensor2struct.modules import rat, lstm, embedders, bert_tokenizer
 
-from transformers import BertModel, ElectraModel
+from transformers import BertModel, ElectraModel, AutoModel
 
 import logging
 
@@ -81,9 +81,14 @@ class SpiderEncoderBertPreproc(abstract_preproc.AbstractPreproc):
             + sum(len(c.name) for c in item.schema.columns)
             + sum(len(t.name) for t in item.schema.tables)
         )
+        if "phobert" in self.tokenizer_config and num_words > 256:
+            logger.info(f"Found long seq in {item.schema.db_id}")
+            # return False, None
+            return True, True
         if num_words > 512:
             logger.info(f"Found long seq in {item.schema.db_id}")
-            return False, None
+            # return False, None
+            return True, True
         else:
             return True, None
 
@@ -161,7 +166,8 @@ class SpiderEncoderBertPreproc(abstract_preproc.AbstractPreproc):
         for section, texts in self.texts.items():
             with open(os.path.join(self.data_dir, section + ".jsonl"), "w") as f:
                 for text in texts:
-                    f.write(json.dumps(text) + "\n")
+                    f.write(json.dumps(text, ensure_ascii=False))
+                    f.write("\n")
 
     def load(self):
         # self.tokenizer = BertTokenizer.from_pretrained(self.data_dir)
@@ -201,6 +207,7 @@ class SpiderEncoderBert(torch.nn.Module):
         super().__init__()
         self._device = device
         self.preproc = preproc
+        self.bert_version = bert_version
         self.bert_token_type = bert_token_type
         self.base_enc_hidden_size = (
             1024 if "large" in bert_version else 768
@@ -238,6 +245,8 @@ class SpiderEncoderBert(torch.nn.Module):
 
         if "electra" in bert_version:
             modelclass = ElectraModel
+        elif "phobert" in bert_version:
+            modelclass = AutoModel
         elif "bert" in bert_version:
             modelclass = BertModel
         else:
@@ -270,7 +279,11 @@ class SpiderEncoderBert(torch.nn.Module):
                 qs + [c for col in cols for c in col] + [t for tab in tabs for t in tab]
             )
             assert self.tokenizer.check_bert_input_seq(token_list)
-            if len(token_list) > 512:
+            if "phobert" in self.bert_version and len(token_list) > 256:
+                long_seq_set.add(batch_idx)
+                continue
+
+            elif len(token_list) > 512:
                 long_seq_set.add(batch_idx)
                 continue
 
@@ -314,27 +327,28 @@ class SpiderEncoderBert(torch.nn.Module):
 
             batch_id_map[batch_idx] = len(batch_id_map)
 
-        (
-            padded_token_lists,
-            att_mask_lists,
-            tok_type_lists,
-        ) = self.tokenizer.pad_sequence_for_bert_batch(batch_token_lists)
-        tokens_tensor = torch.LongTensor(padded_token_lists).to(self._device)
-        att_masks_tensor = torch.LongTensor(att_mask_lists).to(self._device)
+        if len(long_seq_set) < len(descs):
+            (
+                padded_token_lists,
+                att_mask_lists,
+                tok_type_lists,
+            ) = self.tokenizer.pad_sequence_for_bert_batch(batch_token_lists)
+            tokens_tensor = torch.LongTensor(padded_token_lists).to(self._device)
+            att_masks_tensor = torch.LongTensor(att_mask_lists).to(self._device)
 
-        if self.bert_token_type:
-            tok_type_tensor = torch.LongTensor(tok_type_lists).to(self._device)
-            bert_output = self.bert_model(
-                tokens_tensor,
-                attention_mask=att_masks_tensor,
-                token_type_ids=tok_type_tensor,
-            )[0]
-        else:
-            bert_output = self.bert_model(
-                tokens_tensor, attention_mask=att_masks_tensor
-            )[0]
+            if self.bert_token_type:
+                tok_type_tensor = torch.LongTensor(tok_type_lists).to(self._device)
+                bert_output = self.bert_model(
+                    tokens_tensor,
+                    attention_mask=att_masks_tensor,
+                    token_type_ids=tok_type_tensor,
+                )[0]
+            else:
+                bert_output = self.bert_model(
+                    tokens_tensor, attention_mask=att_masks_tensor
+                )[0]
 
-        enc_output = bert_output
+            enc_output = bert_output
 
         column_pointer_maps = [
             {i: [i] for i in range(len(desc["columns"]))} for desc in descs
@@ -343,33 +357,36 @@ class SpiderEncoderBert(torch.nn.Module):
             {i: [i] for i in range(len(desc["tables"]))} for desc in descs
         ]
 
-        assert len(long_seq_set) == 0  # remove them for now
+        # assert len(long_seq_set) == 0  # remove them for now
 
         # 2) rat update
         result = []
         for batch_idx, desc in enumerate(descs):
             # retrieve representations
-            bert_batch_idx = batch_id_map[batch_idx]
-            q_enc = enc_output[bert_batch_idx][
-                batch_id_to_retrieve_question[bert_batch_idx]
-            ]
-            col_enc = enc_output[bert_batch_idx][
-                batch_id_to_retrieve_column[bert_batch_idx]
-            ]
-            tab_enc = enc_output[bert_batch_idx][
-                batch_id_to_retrieve_table[bert_batch_idx]
-            ]
-
-            if self.summarize_header == "avg":
-                col_enc_2 = enc_output[bert_batch_idx][
-                    batch_id_to_retrieve_column_2[bert_batch_idx]
+            if batch_idx in long_seq_set:
+                q_enc, col_enc, tab_enc = self.encoder_long_seq(desc) 
+            else:
+                bert_batch_idx = batch_id_map[batch_idx]
+                q_enc = enc_output[bert_batch_idx][
+                    batch_id_to_retrieve_question[bert_batch_idx]
                 ]
-                tab_enc_2 = enc_output[bert_batch_idx][
-                    batch_id_to_retrieve_table_2[bert_batch_idx]
+                col_enc = enc_output[bert_batch_idx][
+                    batch_id_to_retrieve_column[bert_batch_idx]
+                ]
+                tab_enc = enc_output[bert_batch_idx][
+                    batch_id_to_retrieve_table[bert_batch_idx]
                 ]
 
-                col_enc = (col_enc + col_enc_2) / 2.0  # avg of first and last token
-                tab_enc = (tab_enc + tab_enc_2) / 2.0  # avg of first and last token
+                if self.summarize_header == "avg":
+                    col_enc_2 = enc_output[bert_batch_idx][
+                        batch_id_to_retrieve_column_2[bert_batch_idx]
+                    ]
+                    tab_enc_2 = enc_output[bert_batch_idx][
+                        batch_id_to_retrieve_table_2[bert_batch_idx]
+                    ]
+
+                    col_enc = (col_enc + col_enc_2) / 2.0  # avg of first and last token
+                    tab_enc = (tab_enc + tab_enc_2) / 2.0  # avg of first and last token
 
             words_for_copying = desc["question_for_copying"]
             assert q_enc.size()[0] == len(words_for_copying)
@@ -428,3 +445,655 @@ class SpiderEncoderBert(torch.nn.Module):
                 )
             )
         return result
+    
+    def _bert_encode(self, ids):
+        if not isinstance(ids[0], list):  # encode question words
+            tokens_tensor = torch.tensor([ids]).to(self._device)
+            outputs = self.bert_model(tokens_tensor)
+            return outputs[0][0, 1:-1]  # remove [CLS] and [SEP]
+        else:
+            max_len = max([len(it) for it in ids])
+            tok_ids = []
+            for item_ids in ids:
+                item_ids = item_ids + [self.tokenizer.pad_token_id] * (max_len - len(item_ids))
+                tok_ids.append(item_ids)
+
+            tokens_tensor = torch.tensor(tok_ids).to(self._device)
+            outputs = self.bert_model(tokens_tensor)
+            return outputs[0][:, 0, :]
+
+    def encoder_long_seq(self, desc):
+        """
+        Since bert cannot handle sequence longer than 512, each column/table is encoded individually
+        The representation of a column/table is the vector of the first token [CLS]
+        """
+        qs = self.tokenizer.text_to_ids(desc['question_text'], cls=True)
+        cols = [self.tokenizer.text_to_ids(c, cls=True) for c in desc['columns']]
+        tabs = [self.tokenizer.text_to_ids(t, cls=True) for t in desc['tables']]
+
+        enc_q = self._bert_encode(qs)
+        enc_col = self._bert_encode(cols)
+        enc_tab = self._bert_encode(tabs)
+        return enc_q, enc_col, enc_tab
+
+@registry.register("pretrainedlm", "bert-encoder")
+class BertEncoder(torch.nn.Module):
+    Preproc = SpiderEncoderBertPreproc
+    batched = True
+
+    def __init__(
+        self,
+        device,
+        preproc,
+        bert_token_type=False,
+        bert_version="bert-base-uncased",
+        summarize_header="avg",
+    ):
+        super().__init__()
+        self._device = device
+        self.preproc = preproc
+        self.bert_version = bert_version
+        self.bert_token_type = bert_token_type
+        self.base_enc_hidden_size = (
+            1024 if "large" in bert_version else 768
+        )
+
+        # ways to summarize header
+        assert summarize_header in ["first", "avg"]
+        self.summarize_header = summarize_header
+        self.enc_hidden_size = self.base_enc_hidden_size
+
+
+        if "electra" in bert_version:
+            modelclass = ElectraModel
+        elif "phobert" in bert_version:
+            modelclass = AutoModel
+        elif "bert" in bert_version:
+            modelclass = BertModel
+        else:
+            raise NotImplementedError
+        self.bert_model = modelclass.from_pretrained(bert_version)
+        self.tokenizer = self.preproc.tokenizer
+        # self.bert_model.resize_token_embeddings(
+        #    len(self.tokenizer)
+        # )  # several tokens added
+
+    def forward(self, descs):
+        # TODO: abstract the operations of batching for bert
+        batch_token_lists = []
+        batch_id_to_retrieve_question = []
+        batch_id_to_retrieve_column = []
+        batch_id_to_retrieve_table = []
+        if self.summarize_header == "avg":
+            batch_id_to_retrieve_column_2 = []
+            batch_id_to_retrieve_table_2 = []
+        long_seq_set = set()
+        batch_id_map = {}  # some long examples are not included
+
+        # 1) retrieve bert pre-trained embeddings
+        for batch_idx, desc in enumerate(descs):
+            qs = self.tokenizer.text_to_ids(desc["question_text"], cls=True)
+            cols = [self.tokenizer.text_to_ids(c, cls=False) for c in desc["columns"]]
+            tabs = [self.tokenizer.text_to_ids(t, cls=False) for t in desc["tables"]]
+
+            token_list = (
+                qs + [c for col in cols for c in col] + [t for tab in tabs for t in tab]
+            )
+            assert self.tokenizer.check_bert_input_seq(token_list)
+            if "phobert" in self.bert_version and len(token_list) > 256:
+                long_seq_set.add(batch_idx)
+                continue
+
+            elif len(token_list) > 512:
+                long_seq_set.add(batch_idx)
+                continue
+
+            q_b = len(qs)
+            col_b = q_b + sum(len(c) for c in cols)
+            # leave out [CLS] and [SEP]
+            question_indexes = list(range(q_b))[1:-1]
+            # use the first/avg representation for column/table
+            column_indexes = np.cumsum(
+                [q_b] + [len(token_list) for token_list in cols[:-1]]
+            ).tolist()
+            table_indexes = np.cumsum(
+                [col_b] + [len(token_list) for token_list in tabs[:-1]]
+            ).tolist()
+            if self.summarize_header == "avg":
+                column_indexes_2 = np.cumsum(
+                    [q_b - 2] + [len(token_list) for token_list in cols]
+                ).tolist()[1:]
+                table_indexes_2 = np.cumsum(
+                    [col_b - 2] + [len(token_list) for token_list in tabs]
+                ).tolist()[1:]
+
+            # token_list is already indexed
+            indexed_token_list = token_list
+            batch_token_lists.append(indexed_token_list)
+
+            # add index for retrieving representations
+            question_rep_ids = torch.LongTensor(question_indexes).to(self._device)
+            batch_id_to_retrieve_question.append(question_rep_ids)
+            column_rep_ids = torch.LongTensor(column_indexes).to(self._device)
+            batch_id_to_retrieve_column.append(column_rep_ids)
+            table_rep_ids = torch.LongTensor(table_indexes).to(self._device)
+            batch_id_to_retrieve_table.append(table_rep_ids)
+            if self.summarize_header == "avg":
+                assert all(i2 >= i1 for i1, i2 in zip(column_indexes, column_indexes_2))
+                column_rep_ids_2 = torch.LongTensor(column_indexes_2).to(self._device)
+                batch_id_to_retrieve_column_2.append(column_rep_ids_2)
+                assert all(i2 >= i1 for i1, i2 in zip(table_indexes, table_indexes_2))
+                table_rep_ids_2 = torch.LongTensor(table_indexes_2).to(self._device)
+                batch_id_to_retrieve_table_2.append(table_rep_ids_2)
+
+            batch_id_map[batch_idx] = len(batch_id_map)
+
+        if len(long_seq_set) < len(descs):
+            (
+                padded_token_lists,
+                att_mask_lists,
+                tok_type_lists,
+            ) = self.tokenizer.pad_sequence_for_bert_batch(batch_token_lists)
+            tokens_tensor = torch.LongTensor(padded_token_lists).to(self._device)
+            att_masks_tensor = torch.LongTensor(att_mask_lists).to(self._device)
+
+            if self.bert_token_type:
+                tok_type_tensor = torch.LongTensor(tok_type_lists).to(self._device)
+                bert_output = self.bert_model(
+                    tokens_tensor,
+                    attention_mask=att_masks_tensor,
+                    token_type_ids=tok_type_tensor,
+                )[0]
+            else:
+                bert_output = self.bert_model(
+                    tokens_tensor, attention_mask=att_masks_tensor
+                )[0]
+
+            enc_output = bert_output
+
+        # assert len(long_seq_set) == 0  # remove them for now
+
+        # 2) rat update
+        output = []
+        for batch_idx, desc in enumerate(descs):
+            # retrieve representations
+            if batch_idx in long_seq_set:
+                q_enc, col_enc, tab_enc = self.encoder_long_seq(desc) 
+            else:
+                bert_batch_idx = batch_id_map[batch_idx]
+                q_enc = enc_output[bert_batch_idx][
+                    batch_id_to_retrieve_question[bert_batch_idx]
+                ]
+                col_enc = enc_output[bert_batch_idx][
+                    batch_id_to_retrieve_column[bert_batch_idx]
+                ]
+                tab_enc = enc_output[bert_batch_idx][
+                    batch_id_to_retrieve_table[bert_batch_idx]
+                ]
+
+                if self.summarize_header == "avg":
+                    col_enc_2 = enc_output[bert_batch_idx][
+                        batch_id_to_retrieve_column_2[bert_batch_idx]
+                    ]
+                    tab_enc_2 = enc_output[bert_batch_idx][
+                        batch_id_to_retrieve_table_2[bert_batch_idx]
+                    ]
+
+                    col_enc = (col_enc + col_enc_2) / 2.0  # avg of first and last token
+                    tab_enc = (tab_enc + tab_enc_2) / 2.0  # avg of first and last token
+
+            words_for_copying = desc["question_for_copying"]
+            assert q_enc.size()[0] == len(words_for_copying)
+            assert col_enc.size()[0] == len(desc["columns"])
+            assert tab_enc.size()[0] == len(desc["tables"])
+
+            # rat update
+            # TODO: change this, question is in the protocal of build relations
+            desc["question"] = words_for_copying
+            output.append(
+                (
+                    q_enc,
+                    col_enc,
+                    tab_enc
+                )
+            )
+        return output
+    
+    def _bert_encode(self, ids):
+        if not isinstance(ids[0], list):  # encode question words
+            tokens_tensor = torch.tensor([ids]).to(self._device)
+            outputs = self.bert_model(tokens_tensor)
+            return outputs[0][0, 1:-1]  # remove [CLS] and [SEP]
+        else:
+            max_len = max([len(it) for it in ids])
+            tok_ids = []
+            for item_ids in ids:
+                item_ids = item_ids + [self.tokenizer.pad_token_id] * (max_len - len(item_ids))
+                tok_ids.append(item_ids)
+
+            tokens_tensor = torch.tensor(tok_ids).to(self._device)
+            outputs = self.bert_model(tokens_tensor)
+            return outputs[0][:, 0, :]
+
+    def encoder_long_seq(self, desc):
+        """
+        Since bert cannot handle sequence longer than 512, each column/table is encoded individually
+        The representation of a column/table is the vector of the first token [CLS]
+        """
+        qs = self.tokenizer.text_to_ids(desc['question_text'], cls=True)
+        cols = [self.tokenizer.text_to_ids(c, cls=True) for c in desc['columns']]
+        tabs = [self.tokenizer.text_to_ids(t, cls=True) for t in desc['tables']]
+
+        enc_q = self._bert_encode(qs)
+        enc_col = self._bert_encode(cols)
+        enc_tab = self._bert_encode(tabs)
+        return enc_q, enc_col, enc_tab
+    
+# Encoder without language model
+@registry.register("encoder", "spider-bert-truncatedV2")
+class SpiderEncoderBertTruncated(torch.nn.Module):
+    
+    Preproc = SpiderEncoderBertPreproc
+    batched = True
+
+    def __init__(
+        self,
+        device,
+        preproc,
+        bert_version="bert-base-uncased",
+        include_in_memory=("question", "column", "table"),
+        rat_config={},
+        linking_config={},
+    ):
+        super().__init__()
+        self._device = device
+        self.preproc = preproc
+        self.linking_config = linking_config
+        self.include_in_memory = include_in_memory
+        self.base_enc_hidden_size = (
+            1024 if "large" in bert_version else 768
+        )
+        self.enc_hidden_size = self.base_enc_hidden_size
+     
+        
+        # rat
+        rat_modules = {"rat": rat.RAT, "none": rat.NoOpUpdate}
+        self.rat_update = registry.instantiate(
+            rat_modules[rat_config["name"]],
+            rat_config,
+            unused_keys={"name"},
+            device=self._device,
+            relations2id=preproc.relations2id,
+            hidden_size=self.enc_hidden_size,
+        )
+
+        self.tokenizer = self.preproc.tokenizer
+        # self.bert_model.resize_token_embeddings(
+        #    len(self.tokenizer)
+        # )  # several tokens added
+
+    def forward(self, desc, plm_output, relation):
+        # TODO: abstract the operations of batching for bert
+
+        (q_enc, col_enc, tab_enc) = plm_output
+        assert q_enc.size()[0] == len(desc["question_for_copying"])
+        assert col_enc.size()[0] == len(desc["columns"])
+        assert tab_enc.size()[0] == len(desc["tables"])
+
+        # rat update
+        # TODO: change this, question is in the protocal of build relations
+        (
+            q_enc_new_item,
+            c_enc_new_item,
+            t_enc_new_item,
+        ) = self.rat_update.forward_unbatched(
+            desc,
+            q_enc.unsqueeze(1),
+            col_enc.unsqueeze(1),
+            tab_enc.unsqueeze(1),
+            relation,
+        )
+        
+        return (
+            q_enc_new_item,
+            c_enc_new_item,
+            t_enc_new_item
+        )
+        
+# Intermediate encoder for deep ensemble leanring 
+@registry.register("inter_encoder", "spider-iter-truncated")
+class SpiderIterBertTruncated(torch.nn.Module):
+    
+    Preproc = SpiderEncoderBertPreproc
+    batched = True
+
+    def __init__(
+        self,
+        device,
+        preproc,
+        bert_version="bert-base-uncased",
+        include_in_memory=("question", "column", "table"),
+        rat_config={},
+        linking_config={},
+    ):
+        super().__init__()
+        self._device = device
+        self.preproc = preproc
+        self.linking_config = linking_config
+        self.include_in_memory = include_in_memory
+        self.base_enc_hidden_size = (
+            1024 if "large" in bert_version else 768
+        )
+        self.enc_hidden_size = self.base_enc_hidden_size
+     
+        
+        # rat intermediate module
+        self.iter_rat = registry.instantiate(
+            rat.IterRat,
+            rat_config,
+            unused_keys={"name"},
+            device=self._device,
+            relations2id=preproc.relations2id,
+            hidden_size=self.enc_hidden_size
+        )
+
+        self.tokenizer = self.preproc.tokenizer
+        # self.bert_model.resize_token_embeddings(
+        #    len(self.tokenizer)
+        # )  # several tokens added
+
+    def forward(self, desc, plm_output, relation):
+        # TODO: abstract the operations of batching for bert
+
+        (q_enc, col_enc, tab_enc) = plm_output
+        assert q_enc.size()[0] == len(desc["question_for_copying"])
+        assert col_enc.size()[0] == len(desc["columns"])
+        assert tab_enc.size()[0] == len(desc["tables"])
+
+        # rat update
+        # TODO: change this, question is in the protocal of build relations
+        (
+            enc_new,
+            c_base,
+            t_base,
+        ) = self.iter_rat.forward_unbatched(
+            desc,
+            q_enc.unsqueeze(1),
+            col_enc.unsqueeze(1),
+            tab_enc.unsqueeze(1),
+            relation,
+        )
+        
+        return (
+            enc_new,
+            c_base,
+            t_base
+        )
+        
+# after iter encoder layer
+@registry.register("encoder", "spider-bert-after")
+class SpiderEncoderBertAfter(torch.nn.Module):
+    Preproc = SpiderEncoderBertPreproc
+    batched = True
+    
+    def __init__(
+        self,
+        device,
+        preproc,
+        bert_version="bert-base-uncased",
+        include_in_memory=("question", "column", "table"),
+        rat_config={},
+        linking_config={},
+    ):
+        super().__init__()
+        self._device = device
+        self.preproc = preproc
+        self.linking_config = linking_config
+        self.include_in_memory = include_in_memory
+        self.base_enc_hidden_size = (
+            1024 if "large" in bert_version else 768
+        )
+        self.enc_hidden_size = self.base_enc_hidden_size
+     
+        
+        # rat
+        rat_modules = {"rat": rat.AfterRAT, "none": rat.NoOpUpdate}
+        self.rat_update = registry.instantiate(
+            rat_modules[rat_config["name"]],
+            rat_config,
+            unused_keys={"name"},
+            device=self._device,
+            relations2id=preproc.relations2id,
+            hidden_size=self.enc_hidden_size,
+        )
+
+        self.tokenizer = self.preproc.tokenizer
+        # self.bert_model.resize_token_embeddings(
+        #    len(self.tokenizer)
+        # )  # several tokens added
+
+    def forward(self, x, relation, c_base, t_base):
+
+        # rat update
+        # TODO: change this, question is in the protocal of build relations
+        (
+            q_enc_new_item,
+            c_enc_new_item,
+            t_enc_new_item,
+        ) = self.rat_update.forward_unbatched(
+            x,
+            relation,
+            c_base,
+            t_base,
+        )
+        
+        return (
+            q_enc_new_item,
+            c_enc_new_item,
+            t_enc_new_item
+        )
+        
+@registry.register("encoder", "spider-bert-truncated")
+class SpiderEncoderBertTruncated(torch.nn.Module):
+
+    Preproc = SpiderEncoderBertPreproc
+    batched = True
+
+    def __init__(
+        self,
+        device,
+        preproc,
+        bert_token_type=False,
+        bert_version="bert-base-uncased",
+        summarize_header="avg",
+        include_in_memory=("question", "column", "table"),
+        rat_config={},
+        linking_config={},
+    ):
+        super().__init__()
+        self._device = device
+        self.preproc = preproc
+        self.bert_version = bert_version
+        self.bert_token_type = bert_token_type
+        self.linking_config = linking_config
+        self.base_enc_hidden_size = (
+            1024 if "large" in bert_version else 768
+        )
+        self.include_in_memory = include_in_memory
+
+        # ways to summarize header
+        assert summarize_header in ["first", "avg"]
+        self.summarize_header = summarize_header
+        self.enc_hidden_size = self.base_enc_hidden_size
+     
+        # rat
+        rat_modules = {"rat": rat.RAT, "none": rat.NoOpUpdate}
+        self.rat_update = registry.instantiate(
+            rat_modules[rat_config["name"]],
+            rat_config,
+            unused_keys={"name"},
+            device=self._device,
+            relations2id=preproc.relations2id,
+            hidden_size=self.enc_hidden_size,
+        )
+
+        if "electra" in bert_version:
+            modelclass = ElectraModel
+        elif "phobert" in bert_version:
+            modelclass = AutoModel
+        elif "bert" in bert_version:
+            modelclass = BertModel
+        else:
+            raise NotImplementedError
+        self.bert_model = modelclass.from_pretrained(bert_version)
+        self.tokenizer = self.preproc.tokenizer
+        # self.bert_model.resize_token_embeddings(
+        #    len(self.tokenizer)
+        # )  # several tokens added
+
+    def forward(self, desc, relation):
+        # TODO: abstract the operations of batching for bert
+        batch_token_lists = []
+
+        qs = self.tokenizer.text_to_ids(desc["question_text"], cls=True)
+        cols = [self.tokenizer.text_to_ids(c, cls=False) for c in desc["columns"]]
+        tabs = [self.tokenizer.text_to_ids(t, cls=False) for t in desc["tables"]]
+
+        token_list = (
+            qs + [c for col in cols for c in col] + [t for tab in tabs for t in tab]
+        )
+        assert self.tokenizer.check_bert_input_seq(token_list)
+        if (("phobert" in self.bert_version and 
+            len(token_list) <= 256) or
+            ("phobert" not in self.bert_version and len(token_list) <= 512)):
+
+            q_b = len(qs)
+            col_b = q_b + sum(len(c) for c in cols)
+            # leave out [CLS] and [SEP]
+            question_indexes = list(range(q_b))[1:-1]
+            # use the first/avg representation for column/table
+            column_indexes = np.cumsum(
+                [q_b] + [len(token_list) for token_list in cols[:-1]]
+            ).tolist()
+            table_indexes = np.cumsum(
+                [col_b] + [len(token_list) for token_list in tabs[:-1]]
+            ).tolist()
+            if self.summarize_header == "avg":
+                column_indexes_2 = np.cumsum(
+                    [q_b - 2] + [len(token_list) for token_list in cols]
+                ).tolist()[1:]
+                table_indexes_2 = np.cumsum(
+                    [col_b - 2] + [len(token_list) for token_list in tabs]
+                ).tolist()[1:]
+
+            # token_list is already indexed
+            indexed_token_list = token_list
+            batch_token_lists.append(indexed_token_list)
+
+            # add index for retrieving representations
+            question_rep_ids = torch.LongTensor(question_indexes).to(self._device)
+            column_rep_ids = torch.LongTensor(column_indexes).to(self._device)
+            table_rep_ids = torch.LongTensor(table_indexes).to(self._device)
+            if self.summarize_header == "avg":
+                assert all(i2 >= i1 for i1, i2 in zip(column_indexes, column_indexes_2))
+                column_rep_ids_2 = torch.LongTensor(column_indexes_2).to(self._device)
+                assert all(i2 >= i1 for i1, i2 in zip(table_indexes, table_indexes_2))
+                table_rep_ids_2 = torch.LongTensor(table_indexes_2).to(self._device)
+
+            (
+                padded_token_lists,
+                att_mask_lists,
+                tok_type_lists,
+            ) = self.tokenizer.pad_sequence_for_bert_batch(batch_token_lists)
+            tokens_tensor = torch.LongTensor(padded_token_lists).to(self._device)
+            att_masks_tensor = torch.LongTensor(att_mask_lists).to(self._device)
+
+            if self.bert_token_type:
+                tok_type_tensor = torch.LongTensor(tok_type_lists).to(self._device)
+                bert_output = self.bert_model(
+                    tokens_tensor,
+                    attention_mask=att_masks_tensor,
+                    token_type_ids=tok_type_tensor,
+                )[0]
+            else:
+                bert_output = self.bert_model(
+                    tokens_tensor, attention_mask=att_masks_tensor
+                )[0]
+
+            enc_output = bert_output
+
+            # assert len(long_seq_set) == 0  # remove them for now
+
+            # 2) rat update
+            # retrieve representations
+            plm_output = enc_output[0]
+            q_enc = plm_output[question_rep_ids]
+            col_enc = plm_output[column_rep_ids]
+            tab_enc = plm_output[table_rep_ids]
+
+            if self.summarize_header == "avg":
+                col_enc_2 = enc_output[0][column_rep_ids_2]
+                tab_enc_2 = enc_output[0][table_rep_ids_2]
+
+                col_enc = (col_enc + col_enc_2) / 2.0  # avg of first and last token
+                tab_enc = (tab_enc + tab_enc_2) / 2.0  # avg of first and last token
+        else:
+            q_enc, col_enc, tab_enc = self.encoder_long_seq(desc) 
+
+        
+        assert q_enc.size()[0] == len(desc["question_for_copying"])
+        assert col_enc.size()[0] == len(desc["columns"])
+        assert tab_enc.size()[0] == len(desc["tables"])
+
+        # rat update
+        # TODO: change this, question is in the protocal of build relations
+        
+        (
+            q_enc_new_item,
+            c_enc_new_item,
+            t_enc_new_item,
+        ) = self.rat_update.forward_unbatched(
+            desc,
+            q_enc.unsqueeze(1),
+            col_enc.unsqueeze(1),
+            tab_enc.unsqueeze(1),
+            relation,
+        )
+        
+        return (
+            q_enc_new_item,
+            c_enc_new_item,
+            t_enc_new_item,
+        )
+    
+    def _bert_encode(self, ids):
+        if not isinstance(ids[0], list):  # encode question words
+            tokens_tensor = torch.tensor([ids]).to(self._device)
+            outputs = self.bert_model(tokens_tensor)
+            return outputs[0][0, 1:-1]  # remove [CLS] and [SEP]
+        else:
+            max_len = max([len(it) for it in ids])
+            tok_ids = []
+            for item_ids in ids:
+                item_ids = item_ids + [self.tokenizer.pad_token_id] * (max_len - len(item_ids))
+                tok_ids.append(item_ids)
+
+            tokens_tensor = torch.tensor(tok_ids).to(self._device)
+            outputs = self.bert_model(tokens_tensor)
+            return outputs[0][:, 0, :]
+
+    def encoder_long_seq(self, desc):
+        """
+        Since bert cannot handle sequence longer than 512, each column/table is encoded individually
+        The representation of a column/table is the vector of the first token [CLS]
+        """
+        qs = self.tokenizer.text_to_ids(desc['question_text'], cls=True)
+        cols = [self.tokenizer.text_to_ids(c, cls=True) for c in desc['columns']]
+        tabs = [self.tokenizer.text_to_ids(t, cls=True) for t in desc['tables']]
+
+        enc_q = self._bert_encode(qs)
+        enc_col = self._bert_encode(cols)
+        enc_tab = self._bert_encode(tabs)
+        return enc_q, enc_col, enc_tab
+
+    
