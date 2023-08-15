@@ -49,6 +49,10 @@ function(args={}, data_path=_data_path) {
         mask_type: "l0",
         slow_parameters: null,
         data_scheduler: "mixed_db_scheduler",
+
+        # eqrm setting 
+        burnin_iters: 2500,
+        quantile: 0.75,
     },
 
     # merge args, to support this, you have to use $.args in your inherited function
@@ -206,6 +210,11 @@ function(args={}, data_path=_data_path) {
             batch_size: $.train.batch_size,
         },
         keep_every_n: 100,
+    },
+
+    eqrm_train: $.train + {
+      burnin_iters: $.args.burnin_iters,
+      quantile: $.args.quantile,
     },
 
     pretrain: {
