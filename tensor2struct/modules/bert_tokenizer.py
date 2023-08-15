@@ -5,7 +5,7 @@ import stanza
 from spacy_stanza import StanzaLanguage
 
 from transformers import AutoTokenizer
-from tokenizers import BertWordPieceTokenizer, ByteLevelBPETokenizer
+from tokenizers import BertWordPieceTokenizer, ByteLevelBPETokenizer, Tokenizer
 
 import logging
 
@@ -33,7 +33,10 @@ class BERTokenizer:
             lowercase = True # roberta, electra, bert-base-uncased
         else:
             lowercase = False # bert-cased
-        if version.startswith("bert") or "electra" in version:
+        if "phobert" in version: 
+            self.tokenizer = Tokenizer.from_pretrained(version)
+            self.auto_tokenizer = AutoTokenizer.from_pretrained(version)
+        elif version.startswith("bert") or "electra" in version:
             vocab_path = os.path.join(vocab_dir, "vocab.txt") 
             self.tokenizer = BertWordPieceTokenizer(vocab_path, lowercase=lowercase)
         elif version.startswith("roberta"):
@@ -43,13 +46,23 @@ class BERTokenizer:
         else:
             raise NotImplementedError
         
-        self.cls_token = self.tokenizer._parameters["cls_token"]
-        self.cls_token_id = self.tokenizer.token_to_id(self.cls_token)
-        self.sep_token = self.tokenizer._parameters["sep_token"]
-        self.sep_token_id = self.tokenizer.token_to_id(self.sep_token)
-        self.pad_token = self.tokenizer._parameters["pad_token"]
-        self.pad_token_id = self.tokenizer.token_to_id(self.pad_token)
-    
+        if "phobert" in version:
+            self.cls_token = self.auto_tokenizer.cls_token
+            self.cls_token_id = self.auto_tokenizer.convert_tokens_to_ids(self.cls_token)
+            self.sep_token = self.auto_tokenizer.sep_token
+            self.sep_token_id = self.auto_tokenizer.convert_tokens_to_ids(self.sep_token)
+            self.pad_token = self.auto_tokenizer.pad_token
+            self.pad_token_id = self.auto_tokenizer.convert_tokens_to_ids(self.pad_token)
+        else:
+            self.cls_token = self.tokenizer._parameters["cls_token"]
+            self.cls_token_id = self.tokenizer.token_to_id(self.cls_token)
+            self.sep_token = self.tokenizer._parameters["sep_token"]
+            self.sep_token_id = self.tokenizer.token_to_id(self.sep_token)
+            self.pad_token = self.tokenizer._parameters["pad_token"]
+            self.pad_token_id = self.tokenizer.token_to_id(self.pad_token)
+
+        self.version = version 
+
     def _encode(self, input_):
         if isinstance(input_, list) or isinstance(input_, tuple):
             encodes = self.tokenizer.encode(input_, is_pretokenized=True)
@@ -64,7 +77,7 @@ class BERTokenizer:
 
     def tokenize_and_lemmatize(self, text, lang="en"):
         """
-        This will be used for matching 
+        This will be used for matching  
         1) remove cls and sep
         2) lemmatize 
         """
@@ -72,9 +85,19 @@ class BERTokenizer:
             snlp = stanza.Pipeline(lang=lang, use_gpu=True, tokenize_pretokenized=True)
             BERTokenizer.sp_nlp = StanzaLanguage(snlp)
         encodes = self._encode(text)
-        tokens = encodes.tokens[1:-1]
-        norm_tokens = [t.lemma_ for t in self.sp_nlp([tokens])]
-        return norm_tokens
+        if ("phobert" in self.version):
+            norm_tokens = [t.lower() for t in encodes.tokens[1:-1]]
+            return norm_tokens
+        elif ("velectra" in self.version):
+            "Vietnamese Electra is cased"
+            return [t for t in encodes.tokens[1:-1]]
+        elif ("multilingual" in self.version and "cased" in self.version):
+            "for bert base multilingual cased"
+            return [t for t in encodes.tokens[1:-1]]
+        else:
+            tokens = encodes.tokens[1:-1]
+            norm_tokens = [t.lemma_ for t in self.sp_nlp([tokens])]
+            return norm_tokens
 
     def tokenize_with_orig(self, text):
         """
@@ -82,6 +105,7 @@ class BERTokenizer:
         """
         # TODO: if text is a list, change accordingly how the offset is computed
         assert isinstance(text, str)
+        # Temporary for word level
         encodes = self._encode(text)
         orig_tokens = [text[i:j] for i,j in encodes.offsets[1:-1]]
         return orig_tokens
@@ -94,8 +118,11 @@ class BERTokenizer:
             snlp = stanza.Pipeline(lang=lang, use_gpu=True, tokenize_pretokenized=True)
             BERTokenizer.sp_nlp = StanzaLanguage(snlp)
 
-        tokens = self.tokenizer.encode(text).tokens[1:-1]
-        return self.sp_nlp([tokens])
+        if ("phobert" in self.version) or ("velectra" in self.version):
+            return []
+        else:
+            tokens = self.tokenizer.encode(text).tokens[1:-1]
+            return self.sp_nlp([tokens])
 
     def check_bert_input_seq(self, toks):
         if toks[0] == self.cls_token_id and toks[-1] == self.sep_token_id:
