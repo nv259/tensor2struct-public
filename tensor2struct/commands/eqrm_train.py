@@ -135,9 +135,9 @@ class EQRMTrainer(train.Trainer):
                 new_lr = [param["lr"] for param in optimizer.param_groups]
             
             if last_step % self.train_config.report_every_n == 0:
-                self.logger.info("Step {}: loss={:.4f}".format(last_step, ret_dic["loss"]))
+                self.logger.info("Step {}: loss={:.4f}".format(last_step, loss))
                 self.logger.info(f"Step {last_step}, lr={new_lr}")
-                wandb.log({"train_loss": ret_dic["loss"]}, step=last_step)
+                wandb.log({"train_loss": loss}, step=last_step)
                 for i in range(len(new_lr)):
                     wandb.log({f"lr_{i}": new_lr[i]}, step=last_step)
                 # print(f'{[param["lr"] for param in optimizer.param_groups]}')
