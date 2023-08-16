@@ -1,5 +1,5 @@
 {
-    local exp_id = 2,
+    local exp_id = 0,
     project: "spider_value",
     logdir: "log/spider/bert_value_%d" %exp_id,
     model_config: "configs/spider/model_config/vi_spider_bert_value.jsonnet",
@@ -9,7 +9,7 @@
 
         # model 
         num_layers: 6, 
-        sc_link: true, 
+        sc_link: false, 
         cv_link: false,
         loss_type: "softmax",  # softmax, label_smooth
 
@@ -39,7 +39,7 @@
         device: "cuda:0",
     },
 
-    eval_section: "val",
+    eval_section: "test",
     eval_type: "all",  # match, exec, all
     eval_method: "spider_beam_search_with_heuristic",
     eval_output: "ie_dir/spider_value",
