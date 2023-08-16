@@ -80,9 +80,9 @@ class EQRMTrainer(train.Trainer):
                 batch = next(train_data_loader)
                 losses =  losses + eqrm_trainer.train(self.model, batch, last_step)
            
-            print('\nnum_batch_accumulated:', self.train_config.num_batch_accumulated)
-            print('\nbatch size:', self.train_config.batch_size)
-            print('\ntotal:', len(losses))
+            # print('\nnum_batch_accumulated:', self.train_config.num_batch_accumulated)
+            # print('\nbatch size:', self.train_config.batch_size)
+            # print('\ntotal:', len(losses))
              
             loss, reset_opt = eqrm_trainer.transform(losses, last_step)
             
