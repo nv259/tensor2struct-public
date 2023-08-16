@@ -34,7 +34,7 @@
         burnin_iters: 2500,
         quantile: 0.75,
         max_steps: 20000,
-        save_threshold: 10000,
+        save_threshold: 19000,
         use_bert_training: true,
         device: "cuda:0",
     },
