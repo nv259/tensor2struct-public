@@ -38,8 +38,10 @@ class EQRM(nn.Module):
         ret_dic = {}
         with torch.set_grad_enabled(model.training):
             print('FEEDING DATA TO ENCODER')
+            print('batch size:', len(batch))
             "1. Feed data to encoder"
             enc_list = [enc_input for enc_input, dec_output in batch]
+            print('length of enc_list:', len(enc_list), len(enc_list[0]))
             enc_states = model.encoder(enc_list)
             
             print('FOR EACH ENC IN ENCODED') 

@@ -80,6 +80,7 @@ class EQRMTrainer(train.Trainer):
             for _i in range(self.train_config.num_batch_accumulated):  
                 print('GETTING BATCH')
                 batch = next(train_data_loader)
+                print('batch size:', len(batch))
                 print('APPENDING LOSSES')
                 losses =  losses + eqrm_trainer.train(self.model, batch, last_step)
             
