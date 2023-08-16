@@ -17,7 +17,7 @@
         opt: "torchAdamw",  # bertAdamw, torchAdamw
         lr_scheduler: "bert_warmup_polynomial_group_v2",  # bert_warmup_polynomial_group, bert_warmup_polynomial_group_v2, noop
         bert_token_type: false,
-        bert_version: "vinai/phobert-large", 
+        bert_version: "vinai/phobert-base", 
         bert_lr: 2e-5,
 
         # grammar
