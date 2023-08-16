@@ -75,7 +75,6 @@ class EQRMTrainer(train.Trainer):
 
     def step(self, config, train_data_loader, optimizer, lr_scheduler, last_step, eqrm_trainer):
         with self.model_random:
-            # print('APPENDING LOSSES')
             losses = []
             for _i in range(self.train_config.num_batch_accumulated):  
                 print('GETTING BATCH')
@@ -84,14 +83,8 @@ class EQRMTrainer(train.Trainer):
                 print('APPENDING LOSSES')
                 losses =  losses + eqrm_trainer.train(self.model, batch, last_step)
             
-            print('num_batch_accumulated:', self.train_config.num_batch_accumulated)
-            print('batch size:', self.train_config.batch_size)
-            print('total:', len(losses))
-            
-            print('TRANSFORMING LOSS')
             loss, reset_opt = eqrm_trainer.transform(losses, last_step)
             
-            # print('CLIPPING GRAD') 
             # clip grad for both bert and non-bert params
             if self.train_config.clip_grad and self.train_config.use_bert_training:
                 for param_group in optimizer.param_groups:
@@ -99,7 +92,6 @@ class EQRMTrainer(train.Trainer):
                         param_group["params"], self.train_config.clip_grad,
                     )
             
-            # reset
             if reset_opt:
                 print('Reset optimizer and lr scheduler')
                 if self.train_config.use_bert_training:
@@ -131,13 +123,9 @@ class EQRMTrainer(train.Trainer):
                       param_groups = optimizer.param_groups,
                     )
 
-            # print('ZERO GRAD')
             optimizer.zero_grad()
-            # print('LOSS.BACKWARD()')
             loss.backward()
-            # print('OPTIMIZER.STEP()')
             optimizer.step()
-            # print('UPDATING LR')
             new_lr = lr_scheduler.update_lr(last_step)
             
             if new_lr is None:

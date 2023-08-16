@@ -37,21 +37,16 @@ class EQRM(nn.Module):
         
         ret_dic = {}
         with torch.set_grad_enabled(model.training):
-            print('FEEDING DATA TO ENCODER')
-            print('batch size:', len(batch))
             "1. Feed data to encoder"
             enc_list = [enc_input for enc_input, dec_output in batch]
-            print('length of enc_list:', len(enc_list), len(enc_list[0]))
             enc_states = model.encoder(enc_list)
             
-            print('FOR EACH ENC IN ENCODED') 
             "2. For enc in encoded"
             losses = []  # list cannot maintain grad_fn
             for enc_state, (enc_input, dec_output) in zip(enc_states, batch):
                 ret_dic = model.decoder(dec_output, enc_state)
                 losses.append(ret_dic["loss"])
         
-        print('losses:', losses)
         return losses
     
     def transform(self, losses, step, unlabeled=None):
