@@ -75,11 +75,16 @@ class EQRMTrainer(train.Trainer):
 
     def step(self, config, train_data_loader, optimizer, lr_scheduler, last_step, eqrm_trainer):
         with self.model_random:
-            # for _i in range(self.train_config.num_batch_accumulated):  # TODO: implement multiple-batch
-                                                                       # stack all losses then call transform instead of return loss 
-            # print(type(train_data_loader))
-            batch = next(train_data_loader)
-            ret_dic, reset_opt = eqrm_trainer.train(self.model, batch, last_step)  # bookmark here
+            losses = []
+            for _i in range(self.train_config.num_batch_accumulated):  
+                batch = next(train_data_loader)
+                losses =  losses + eqrm_trainer.train(self.model, batch, last_step)
+           
+            print('\nnum_batch_accumulated:', self.train_config.num_batch_accumulated)
+            print('\nbatch size:', self.train_config.batch_size)
+            print('\ntotal:', losses.shape)
+             
+            loss, reset_opt = eqrm_trainer.transform(losses, last_step)
             
             # clip grad for both bert and non-bert params
             if self.train_config.clip_grad and self.train_config.use_bert_training:
@@ -122,7 +127,7 @@ class EQRMTrainer(train.Trainer):
 
             
             optimizer.zero_grad()
-            ret_dic["loss"].backward()
+            loss.backward()
             optimizer.step()
             new_lr = lr_scheduler.update_lr(last_step)
             

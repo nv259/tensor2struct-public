@@ -47,19 +47,11 @@ class EQRM(nn.Module):
               ret_dic = model.decoder(dec_output, enc_state)
               losses.append(ret_dic["loss"])
 
-        "3. Update losses"
-        losses = torch.cat([loss.reshape(1) for loss in losses])
-        loss = self.transform(losses, step)
-        ret_dic["loss"] = loss
-        
-        # loss.backward()  # TODO: reset optimizer at burnin_iters
-        # reset_opt = True if self.update_count == self.burnin_iters else False
-        reset_opt = True if step == self.burnin_iters else False
-        
-        # self.update_count = self.update_count + 1 
-        return ret_dic, reset_opt
-        
+        return losses
+     
     def transform(self, losses, step, unlabeled=None):
+        losses = torch.cat([loss.reshape(1) for loss in losses])
+        
         if step < self.burnin_iters:
             # Burn-in/anneanlig period uses ERM like penalty methods
             loss = torch.mean(losses)
@@ -68,5 +60,6 @@ class EQRM(nn.Module):
             self.dist.estimate_parameters(losses)
             loss = self.dist.icdf(self.alpha)
         
-        return loss
+        reset_opt = True if step == self.burnin_iters else False  # Reset optimizer at burnin_iters step
+        return loss, reset_opt
     
